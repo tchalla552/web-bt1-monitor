@@ -19,6 +19,9 @@ const FUNCTION = {
 }
 
 const NAME_PREFIX = 'BT-TH';
+const MOCK_MODE = new URLSearchParams(window.location.search).get('mock') === '1';
+const MOCK_DATA_URL = './data/p1_ml2430_test_telemetry.json';
+const MOCK_INTERVAL_MS = 2000;
 const WRITE_SERVICE_UUID = '0000ffd0-0000-1000-8000-00805f9b34fb';
 const NOTIFY_SERVICE_UUID = '0000fff0-0000-1000-8000-00805f9b34fb';
 const WRITE_CHAR_UUID = '0000ffd1-0000-1000-8000-00805f9b34fb';
@@ -29,19 +32,81 @@ class BtOneApp extends BLEDevice {
     super(NAME_PREFIX, WRITE_SERVICE_UUID, NOTIFY_SERVICE_UUID, WRITE_CHAR_UUID, NOTIFY_CHAR_UUID);
   }
 
-  async start() {
-    await this.connect();
-    const payload = new Int8Array([255, 3, 1, 0, 0, 34, 209, 241]);
-    this.write(payload);
-    this.timer =  window.setInterval( () => this.write(payload), 5000);
+async start() {
+  if (MOCK_MODE) {
+    await this.startMock();
+    return;
   }
 
-  async stop() {
-    await this.disconnect();
-    if (this.timer) window.clearInterval(this.timer);
+  await this.connect();
+  const payload = new Int8Array([255, 3, 1, 0, 0, 34, 209, 241]);
+  this.write(payload);
+  this.timer = window.setInterval(() => this.write(payload), 5000);
+}
+
+async startMock() {
+  const response = await fetch(MOCK_DATA_URL);
+
+  if (!response.ok) {
+    throw new Error(`Unable to load mock data: ${response.status}`);
   }
 
-  async toggleLoad() {
+  const fixture = await response.json();
+  this.mockRecords = fixture.records;
+  this.mockIndex = 0;
+
+  this.showConnectedUI();
+  this.renderNextMockRecord();
+
+  this.timer = window.setInterval(() => {
+    this.renderNextMockRecord();
+  }, MOCK_INTERVAL_MS);
+}
+
+renderNextMockRecord() {
+  if (!this.mockRecords || this.mockRecords.length === 0) return;
+
+  const record = this.mockRecords[this.mockIndex];
+
+  // Translate fixture values into the units/names expected by this dashboard.
+  const parsedData = {
+    ...record,
+    power_generation_today:
+      record.power_generation_today_wh !== undefined
+        ? (record.power_generation_today_wh / 1000).toFixed(3)
+        : record.power_generation_today,
+
+    power_generation_total:
+      record.power_generation_total_wh !== undefined
+        ? (record.power_generation_total_wh / 1000).toFixed(3)
+        : record.power_generation_total
+  };
+
+  this.parsedData = parsedData;
+
+  console.log('MOCK:', parsedData);
+
+  this.renderData(parsedData);
+
+  this.mockIndex = (this.mockIndex + 1) % this.mockRecords.length;
+}
+ 
+async stop() {
+  if (this.timer) {
+    window.clearInterval(this.timer);
+    this.timer = null;
+  }
+
+  if (MOCK_MODE) {
+    this.showDisconnectedUI();
+    return;
+  }
+
+  await this.disconnect();
+}
+
+async toggleLoad() {
+if (MOCK_MODE) return;
     if (this.parsedData && this.parsedData['load_status'] == 'off') {
       const payload = new Int8Array([255, 6, 1, 10, 0, 1, 124, 42]);
       this.write(payload);
@@ -51,21 +116,17 @@ class BtOneApp extends BLEDevice {
     }
   }
 
-  onConnect() {
-    super.onConnect();
-    document.querySelectorAll(".hide").forEach(node => {
-      node.classList.remove('hidden');
-    })
-    document.querySelector('#search').classList.add('hidden');
-  }
 
-  onDisconnect() {
-    super.onDisconnect();
-    document.querySelectorAll(".hide").forEach(node => {
-      node.classList.add('hidden');
-    })
-    document.querySelector('#search').classList.remove('hidden');
-  }
+onConnect() {
+  super.onConnect();
+  this.showConnectedUI();
+}
+
+onDisconnect() {
+  super.onDisconnect();
+  this.showDisconnectedUI();
+}
+
 
   onData(dataView) {
     const operation = FUNCTION[dataView.getInt8(1)];
@@ -92,6 +153,23 @@ class BtOneApp extends BLEDevice {
     document.querySelector('#soc').style.width = `${parsedData['battery_percentage']}%`;
     document.querySelector('#load_toggle').classList = `toggle ${parsedData['load_status']}`;
   }
+
+showConnectedUI() {
+  document.querySelectorAll(".hide").forEach(node => {
+    node.classList.remove('hidden');
+  });
+
+  document.querySelector('#search').classList.add('hidden');
+}
+
+showDisconnectedUI() {
+  document.querySelectorAll(".hide").forEach(node => {
+    node.classList.add('hidden');
+  });
+
+  document.querySelector('#search').classList.remove('hidden');
+}
+
 
   parseChargeControllerInfo(dataView) {
     const data = {}
